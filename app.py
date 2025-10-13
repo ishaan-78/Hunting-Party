@@ -4,9 +4,30 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import numpy as np
+import os
+from datetime import datetime
+import io
+
+# Optional Supabase imports
+try:
+    from supabase import create_client, Client
+    SUPABASE_AVAILABLE = True
+except ImportError:
+    SUPABASE_AVAILABLE = False
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 # Page config
-st.set_page_config(page_title="NJ Commercial Real Estate Dashboard", layout="wide", page_icon=":office:")
+st.set_page_config(
+    page_title="Dynamic Commercial Real Estate Dashboard", 
+    layout="wide", 
+    page_icon=":office:",
+    initial_sidebar_state="expanded"
+)
 
 # Load data
 @st.cache_data
@@ -33,11 +54,152 @@ def load_data():
 
     return df
 
+# Initialize Supabase client
+@st.cache_resource
+def init_supabase():
+    """Initialize Supabase client"""
+    if not SUPABASE_AVAILABLE:
+        return None
+        
+    # Try environment variables first
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_ANON_KEY")
+    
+    # If not found, try config file
+    if not url or not key:
+        try:
+            import config
+            url = config.SUPABASE_URL
+            key = config.SUPABASE_ANON_KEY
+        except ImportError:
+            pass
+    
+    if not url or not key or url == "your_supabase_project_url_here":
+        return None
+    
+    try:
+        supabase: Client = create_client(url, key)
+        return supabase
+    except Exception as e:
+        st.error(f"❌ Failed to connect to Supabase: {str(e)}")
+        return None
+
+def clean_and_validate_data(df):
+    """Clean and validate the uploaded CSV data"""
+    # Remove empty rows and rows with all NaN values
+    df = df.dropna(how='all')
+    
+    # Clean price columns
+    price_cols = ['Asking Price', 'Price/SqFt', 'Price/Acre', 'NOI', 'Price/Unit']
+    for col in price_cols:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.replace('$', '').str.replace(',', '').str.replace(' ', '')
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    # Clean percentage columns
+    if 'Cap Rate' in df.columns:
+        df['Cap Rate'] = df['Cap Rate'].astype(str).str.replace('%', '')
+        df['Cap Rate'] = pd.to_numeric(df['Cap Rate'], errors='coerce')
+    
+    # Clean numeric columns
+    numeric_cols = ['SqFt', 'Lot Size', 'Units', 'Days on Market', 'Remaining Term']
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    # Clean coordinate columns
+    if 'Latitude' in df.columns:
+        df['Latitude'] = pd.to_numeric(df['Latitude'], errors='coerce')
+    if 'Longitude' in df.columns:
+        df['Longitude'] = pd.to_numeric(df['Longitude'], errors='coerce')
+    
+    return df
+
+def validate_data_ranges(df):
+    """Validate data is within appropriate ranges"""
+    validation_results = []
+    
+    # Price validation
+    if 'Asking Price' in df.columns:
+        price_data = df['Asking Price'].dropna()
+        if len(price_data) > 0:
+            min_price, max_price = price_data.min(), price_data.max()
+            if min_price < 0:
+                validation_results.append("⚠️ Negative asking prices found")
+            if max_price > 1e12:  # $1 trillion
+                validation_results.append("⚠️ Extremely high asking prices found (>$1T)")
+    
+    # Square footage validation
+    if 'SqFt' in df.columns:
+        sqft_data = df['SqFt'].dropna()
+        if len(sqft_data) > 0:
+            min_sqft, max_sqft = sqft_data.min(), sqft_data.max()
+            if min_sqft < 0:
+                validation_results.append("⚠️ Negative square footage found")
+            if max_sqft > 10e6:  # 10M sqft
+                validation_results.append("⚠️ Extremely large properties found (>10M sqft)")
+    
+    # Cap rate validation
+    if 'Cap Rate' in df.columns:
+        cap_data = df['Cap Rate'].dropna()
+        if len(cap_data) > 0:
+            min_cap, max_cap = cap_data.min(), cap_data.max()
+            if min_cap < 0:
+                validation_results.append("⚠️ Negative cap rates found")
+            if max_cap > 50:  # 50%
+                validation_results.append("⚠️ Extremely high cap rates found (>50%)")
+    
+    # Coordinate validation
+    if 'Latitude' in df.columns and 'Longitude' in df.columns:
+        lat_data = df['Latitude'].dropna()
+        lon_data = df['Longitude'].dropna()
+        if len(lat_data) > 0 and len(lon_data) > 0:
+            if lat_data.min() < -90 or lat_data.max() > 90:
+                validation_results.append("⚠️ Invalid latitude values found")
+            if lon_data.min() < -180 or lon_data.max() > 180:
+                validation_results.append("⚠️ Invalid longitude values found")
+    
+    return validation_results
+
+# Load default data
 df = load_data()
 
 # Title and overview
-st.title("New Jersey Commercial Real Estate Dashboard")
-st.markdown(f"**{len(df)} properties** analyzed from Crexi")
+st.title("🏢 Dynamic Commercial Real Estate Dashboard")
+st.markdown("Upload a CSV file to generate dynamic charts and analyze real estate data")
+st.success("🚀 **Live Demo**: This app updates automatically when code changes!")
+
+# Sidebar for file upload
+st.sidebar.header("📁 Data Upload")
+uploaded_file = st.sidebar.file_uploader(
+    "Choose a CSV file",
+    type="csv",
+    help="Upload a CSV file with commercial real estate data"
+)
+
+# Use uploaded file if available, otherwise use default
+if uploaded_file is not None:
+    try:
+        # Read uploaded CSV file
+        df = pd.read_csv(uploaded_file, skiprows=2, encoding='latin-1')
+        df = clean_and_validate_data(df)
+        st.success(f"✅ Successfully loaded {len(df)} properties from uploaded CSV")
+        
+        # Data validation
+        validation_results = validate_data_ranges(df)
+        if validation_results:
+            st.warning("Data Validation Results:")
+            for result in validation_results:
+                st.write(result)
+        else:
+            st.success("✅ Data validation passed - no issues found")
+            
+    except Exception as e:
+        st.error(f"❌ Error processing uploaded file: {str(e)}")
+        st.info("Using default dataset instead")
+        df = load_data()
+
+st.markdown(f"**{len(df)} properties** currently loaded")
 
 # Sidebar filters
 st.sidebar.header("Filters")
@@ -365,10 +527,63 @@ st.dataframe(
     height=400
 )
 
-# Download button
-st.download_button(
-    label="Download Filtered Data as CSV",
-    data=filtered_df.to_csv(index=False).encode('utf-8'),
-    file_name='filtered_properties.csv',
-    mime='text/csv'
-)
+# Supabase Integration
+st.divider()
+st.header("☁️ Supabase Integration")
+
+# Initialize Supabase client
+supabase_client = init_supabase()
+
+if not SUPABASE_AVAILABLE:
+    st.info("ℹ️ Supabase integration is not available due to import issues. All other features work normally.")
+elif supabase_client:
+    if st.button("Upload Current Data to Supabase", type="primary"):
+        with st.spinner("Uploading to Supabase..."):
+            # Map CSV columns to Supabase table columns
+            supabase_data = []
+            for _, row in filtered_df.iterrows():
+                record = {
+                    'asset_name': row.get('Property Name', ''),
+                    'full_address': row.get('Address', ''),
+                    'total_units': row.get('Units') if pd.notna(row.get('Units')) else None,
+                    'net_rentable_area_sqft': row.get('SqFt') if pd.notna(row.get('SqFt')) else None,
+                    'created_at': datetime.now().isoformat(),
+                    'updated_at': datetime.now().isoformat()
+                }
+                supabase_data.append(record)
+            
+            try:
+                # Insert data into Supabase
+                result = supabase_client.table('deals').insert(supabase_data).execute()
+                st.success(f"✅ Successfully uploaded {len(supabase_data)} records to Supabase")
+            except Exception as e:
+                st.error(f"❌ Failed to upload to Supabase: {str(e)}")
+else:
+    st.warning("⚠️ Supabase credentials not configured. Please:")
+    st.markdown("""
+    1. Copy `config_example.py` to `config.py`
+    2. Fill in your Supabase URL and anon key
+    3. Or set environment variables SUPABASE_URL and SUPABASE_ANON_KEY
+    """)
+
+# Download buttons
+st.divider()
+st.header("💾 Download Data")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    st.download_button(
+        label="Download Filtered Data as CSV",
+        data=filtered_df.to_csv(index=False).encode('utf-8'),
+        file_name=f'filtered_properties_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv',
+        mime='text/csv'
+    )
+
+with col2:
+    st.download_button(
+        label="Download All Data as CSV",
+        data=df.to_csv(index=False).encode('utf-8'),
+        file_name=f'all_properties_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv',
+        mime='text/csv'
+    )
