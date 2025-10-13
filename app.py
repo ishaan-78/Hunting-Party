@@ -113,6 +113,12 @@ def clean_and_validate_data(df):
     if 'Longitude' in df.columns:
         df['Longitude'] = pd.to_numeric(df['Longitude'], errors='coerce')
     
+    # Clean occupancy columns for Supabase mapping
+    occupancy_cols = [col for col in df.columns if 'occupancy' in col.lower()]
+    for col in occupancy_cols:
+        df[col] = df[col].astype(str).str.replace('%', '')
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    
     return df
 
 def validate_data_ranges(df):
@@ -161,6 +167,56 @@ def validate_data_ranges(df):
     
     return validation_results
 
+def map_to_supabase_schema(df):
+    """Map CSV data to Supabase deals table schema"""
+    supabase_data = []
+    
+    for _, row in df.iterrows():
+        # Map to exact Supabase schema fields
+        record = {
+            'asset_name': str(row.get('Property Name', '')),
+            'full_address': str(row.get('Address', '')),
+            'total_units': int(row.get('Units', 0)) if pd.notna(row.get('Units')) and row.get('Units') > 0 else None,
+            'net_rentable_area_sqft': int(row.get('SqFt', 0)) if pd.notna(row.get('SqFt')) and row.get('SqFt') > 0 else None,
+            'source_document': 'CSV Upload',
+            'created_at': datetime.now().isoformat(),
+            'updated_at': datetime.now().isoformat()
+        }
+        
+        # Handle occupancy field (the truncated field from Supabase schema)
+        occupancy_cols = [col for col in df.columns if 'occupancy' in col.lower()]
+        if occupancy_cols:
+            occupancy_value = row.get(occupancy_cols[0])
+            if pd.notna(occupancy_value):
+                # Convert to decimal format (e.g., 85.5 for 85.5%)
+                record['current_occupancy_pct'] = float(occupancy_value)
+        
+        supabase_data.append(record)
+    
+    return supabase_data
+
+def upload_to_supabase(supabase_client, data, auto_upload=True):
+    """Upload data to Supabase with progress tracking"""
+    if not supabase_client or not data:
+        return False, "No data or Supabase client available"
+    
+    try:
+        # Insert data in batches for better performance
+        batch_size = 100
+        total_uploaded = 0
+        
+        for i in range(0, len(data), batch_size):
+            batch = data[i:i + batch_size]
+            result = supabase_client.table('deals').insert(batch).execute()
+            total_uploaded += len(batch)
+            
+            if not auto_upload:
+                st.progress(min(i + batch_size, len(data)) / len(data))
+        
+        return True, f"Successfully uploaded {total_uploaded} records to Supabase"
+    except Exception as e:
+        return False, f"Failed to upload to Supabase: {str(e)}"
+
 # Load default data
 df = load_data()
 
@@ -193,6 +249,19 @@ if uploaded_file is not None:
                 st.write(result)
         else:
             st.success("✅ Data validation passed - no issues found")
+        
+        # Auto-upload to Supabase if configured
+        supabase_client = init_supabase()
+        if supabase_client:
+            with st.spinner("🔄 Automatically uploading to Supabase..."):
+                supabase_data = map_to_supabase_schema(df)
+                success, message = upload_to_supabase(supabase_client, supabase_data, auto_upload=True)
+                if success:
+                    st.success(f"🚀 {message}")
+                else:
+                    st.error(f"❌ {message}")
+        else:
+            st.info("ℹ️ Supabase not configured - data will be available for manual upload below")
             
     except Exception as e:
         st.error(f"❌ Error processing uploaded file: {str(e)}")
@@ -537,27 +606,31 @@ supabase_client = init_supabase()
 if not SUPABASE_AVAILABLE:
     st.info("ℹ️ Supabase integration is not available due to import issues. All other features work normally.")
 elif supabase_client:
-    if st.button("Upload Current Data to Supabase", type="primary"):
-        with st.spinner("Uploading to Supabase..."):
-            # Map CSV columns to Supabase table columns
-            supabase_data = []
-            for _, row in filtered_df.iterrows():
-                record = {
-                    'asset_name': row.get('Property Name', ''),
-                    'full_address': row.get('Address', ''),
-                    'total_units': row.get('Units') if pd.notna(row.get('Units')) else None,
-                    'net_rentable_area_sqft': row.get('SqFt') if pd.notna(row.get('SqFt')) else None,
-                    'created_at': datetime.now().isoformat(),
-                    'updated_at': datetime.now().isoformat()
-                }
-                supabase_data.append(record)
-            
-            try:
-                # Insert data into Supabase
-                result = supabase_client.table('deals').insert(supabase_data).execute()
-                st.success(f"✅ Successfully uploaded {len(supabase_data)} records to Supabase")
-            except Exception as e:
-                st.error(f"❌ Failed to upload to Supabase: {str(e)}")
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.write("**Current Filtered Data Preview for Supabase:**")
+        supabase_data = map_to_supabase_schema(filtered_df)
+        preview_df = pd.DataFrame(supabase_data)
+        st.dataframe(preview_df.head(), use_container_width=True)
+    
+    with col2:
+        if st.button("📤 Upload to Supabase", type="primary"):
+            with st.spinner("Uploading to Supabase..."):
+                success, message = upload_to_supabase(supabase_client, supabase_data, auto_upload=False)
+                if success:
+                    st.success(f"✅ {message}")
+                else:
+                    st.error(f"❌ {message}")
+        
+        # Download Supabase-ready CSV
+        csv_data = preview_df.to_csv(index=False)
+        st.download_button(
+            label="💾 Download Supabase CSV",
+            data=csv_data,
+            file_name=f'supabase_deals_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv',
+            mime='text/csv'
+        )
 else:
     st.warning("⚠️ Supabase credentials not configured. Please:")
     st.markdown("""
