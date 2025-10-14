@@ -32,11 +32,265 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Import all functions from the main app
-from app import (
-    load_data, init_supabase, clean_and_validate_data, validate_data_ranges,
-    map_to_supabase_schema, upload_to_supabase, clear_supabase_table
-)
+# Define all functions directly (no imports from app.py)
+
+# Load data
+@st.cache_data
+def load_data():
+    """Load default data if available, otherwise return empty DataFrame"""
+    try:
+        # Check if file exists first
+        if not os.path.exists('Export Results.csv'):
+            return pd.DataFrame(columns=[
+                'Property Name', 'Type', 'City', 'Address', 'Property Status',
+                'Asking Price', 'SqFt', 'Price/SqFt', 'Cap Rate', 'Units',
+                'Days on Market', 'Latitude', 'Longitude', 'Opportunity Zone'
+            ])
+        
+        df = pd.read_csv('Export Results.csv', skiprows=2, encoding='latin-1')
+        
+        # Clean price columns
+        price_cols = ['Asking Price', 'Price/SqFt', 'Price/Acre', 'NOI', 'Price/Unit']
+        for col in price_cols:
+            if col in df.columns:
+                df[col] = df[col].astype(str).str.replace('$', '').str.replace(',', '').str.replace(' ', '')
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        # Clean percentage columns
+        if 'Cap Rate' in df.columns:
+            df['Cap Rate'] = df['Cap Rate'].astype(str).str.replace('%', '')
+            df['Cap Rate'] = pd.to_numeric(df['Cap Rate'], errors='coerce')
+
+        # Clean numeric columns
+        numeric_cols = ['SqFt', 'Lot Size', 'Units', 'Days on Market', 'Remaining Term']
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        return df
+    except Exception as e:
+        # Return empty DataFrame with expected columns if any error occurs
+        return pd.DataFrame(columns=[
+            'Property Name', 'Type', 'City', 'Address', 'Property Status',
+            'Asking Price', 'SqFt', 'Price/SqFt', 'Cap Rate', 'Units',
+            'Days on Market', 'Latitude', 'Longitude', 'Opportunity Zone'
+        ])
+
+# Initialize Supabase client
+@st.cache_resource
+def init_supabase():
+    """Initialize Supabase client"""
+    if not SUPABASE_AVAILABLE:
+        return None
+        
+    # Try environment variables first
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_ANON_KEY")
+    
+    # If not found, try config file
+    if not url or not key:
+        try:
+            import config
+            url = config.SUPABASE_URL
+            key = config.SUPABASE_ANON_KEY
+        except ImportError:
+            pass
+    
+    if not url or not key or url == "your_supabase_project_url_here":
+        return None
+    
+    try:
+        supabase: Client = create_client(url, key)
+        return supabase
+    except Exception as e:
+        st.error(f"❌ Failed to connect to Supabase: {str(e)}")
+        return None
+
+def clean_and_validate_data(df):
+    """Clean and validate the uploaded CSV data"""
+    # Remove empty rows and rows with all NaN values
+    df = df.dropna(how='all')
+    
+    # Clean price columns
+    price_cols = ['Asking Price', 'Price/SqFt', 'Price/Acre', 'NOI', 'Price/Unit']
+    for col in price_cols:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.replace('$', '').str.replace(',', '').str.replace(' ', '')
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    # Clean percentage columns
+    if 'Cap Rate' in df.columns:
+        df['Cap Rate'] = df['Cap Rate'].astype(str).str.replace('%', '')
+        df['Cap Rate'] = pd.to_numeric(df['Cap Rate'], errors='coerce')
+    
+    # Clean numeric columns
+    numeric_cols = ['SqFt', 'Lot Size', 'Units', 'Days on Market', 'Remaining Term']
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    # Clean coordinate columns
+    if 'Latitude' in df.columns:
+        df['Latitude'] = pd.to_numeric(df['Latitude'], errors='coerce')
+    if 'Longitude' in df.columns:
+        df['Longitude'] = pd.to_numeric(df['Longitude'], errors='coerce')
+    
+    # Clean occupancy columns for Supabase mapping
+    occupancy_cols = [col for col in df.columns if 'occupancy' in col.lower()]
+    for col in occupancy_cols:
+        df[col] = df[col].astype(str).str.replace('%', '')
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    return df
+
+def validate_data_ranges(df):
+    """Validate data is within appropriate ranges"""
+    validation_results = []
+    
+    # Price validation
+    if 'Asking Price' in df.columns:
+        price_data = df['Asking Price'].dropna()
+        if len(price_data) > 0:
+            min_price, max_price = price_data.min(), price_data.max()
+            if min_price < 0:
+                validation_results.append("⚠️ Negative asking prices found")
+            if max_price > 1e12:  # $1 trillion
+                validation_results.append("⚠️ Extremely high asking prices found (>$1T)")
+    
+    # Square footage validation
+    if 'SqFt' in df.columns:
+        sqft_data = df['SqFt'].dropna()
+        if len(sqft_data) > 0:
+            min_sqft, max_sqft = sqft_data.min(), sqft_data.max()
+            if min_sqft < 0:
+                validation_results.append("⚠️ Negative square footage found")
+            if max_sqft > 10e6:  # 10M sqft
+                validation_results.append("⚠️ Extremely large properties found (>10M sqft)")
+    
+    # Cap rate validation
+    if 'Cap Rate' in df.columns:
+        cap_data = df['Cap Rate'].dropna()
+        if len(cap_data) > 0:
+            min_cap, max_cap = cap_data.min(), cap_data.max()
+            if min_cap < 0:
+                validation_results.append("⚠️ Negative cap rates found")
+            if max_cap > 50:  # 50%
+                validation_results.append("⚠️ Extremely high cap rates found (>50%)")
+    
+    # Coordinate validation
+    if 'Latitude' in df.columns and 'Longitude' in df.columns:
+        lat_data = df['Latitude'].dropna()
+        lon_data = df['Longitude'].dropna()
+        if len(lat_data) > 0 and len(lon_data) > 0:
+            if lat_data.min() < -90 or lat_data.max() > 90:
+                validation_results.append("⚠️ Invalid latitude values found")
+            if lon_data.min() < -180 or lon_data.max() > 180:
+                validation_results.append("⚠️ Invalid longitude values found")
+    
+    return validation_results
+
+def map_to_supabase_schema(df):
+    """Map CSV data to Supabase deals table schema
+    
+    This function filters and maps only the fields required by the Supabase deals table:
+    - asset_name (from Property Name)
+    - full_address (from Address) 
+    - total_units (from Units)
+    - net_rentable_area_sqft (from SqFt)
+    - current_occupancy_percent (from any occupancy column)
+    - source_document (set to 'CSV Upload')
+    - created_at/updated_at (timestamps)
+    """
+    supabase_data = []
+    
+    # Show what fields we're mapping
+    st.info("🔄 **Filtering CSV data for Supabase deals table schema:**")
+    
+    for _, row in df.iterrows():
+        # Map to exact Supabase schema fields only
+        record = {
+            'asset_name': str(row.get('Property Name', '')),
+            'full_address': str(row.get('Address', '')),
+            'total_units': int(row.get('Units', 0)) if pd.notna(row.get('Units')) and row.get('Units') > 0 else None,
+            'net_rentable_area_sqft': int(row.get('SqFt', 0)) if pd.notna(row.get('SqFt')) and row.get('SqFt') > 0 else None,
+            'source_document': 'CSV Upload',
+            'created_at': datetime.now().isoformat(),
+            'updated_at': datetime.now().isoformat()
+        }
+        
+        # Handle occupancy field (look for any column with 'occupancy' in the name)
+        # Note: Supabase field is 'current_occupancy_percent', not 'current_occupancy_pct'
+        occupancy_cols = [col for col in df.columns if 'occupancy' in col.lower()]
+        if occupancy_cols:
+            occupancy_value = row.get(occupancy_cols[0])
+            if pd.notna(occupancy_value):
+                # Convert to decimal format (e.g., 85.5 for 85.5%)
+                record['current_occupancy_percent'] = float(occupancy_value)
+        
+        supabase_data.append(record)
+    
+    # Show mapping summary
+    original_cols = list(df.columns)
+    supabase_cols = list(record.keys()) if supabase_data else []
+    
+    st.markdown(f"""
+    **📊 Data Mapping Summary:**
+    - **Original CSV columns:** {len(original_cols)} fields
+    - **Supabase schema fields:** {len(supabase_cols)} fields  
+    - **Records processed:** {len(supabase_data)}
+    
+    **🎯 Mapped Fields:**
+    - `Property Name` → `asset_name`
+    - `Address` → `full_address` 
+    - `Units` → `total_units`
+    - `SqFt` → `net_rentable_area_sqft`
+    - `[occupancy column]` → `current_occupancy_percent`
+    - `source_document` = 'CSV Upload'
+    - `created_at`/`updated_at` = current timestamp
+    """)
+    
+    return supabase_data
+
+def clear_supabase_table(supabase_client):
+    """Clear all existing data from the Supabase deals table"""
+    if not supabase_client:
+        return False, "No Supabase client available"
+    
+    try:
+        # Delete all records from the deals table
+        result = supabase_client.table('deals').delete().neq('id', 0).execute()
+        return True, f"Successfully cleared all existing records from Supabase deals table"
+    except Exception as e:
+        return False, f"Failed to clear Supabase table: {str(e)}"
+
+def upload_to_supabase(supabase_client, data, auto_upload=True, clear_existing=False):
+    """Upload data to Supabase with progress tracking"""
+    if not supabase_client or not data:
+        return False, "No data or Supabase client available"
+    
+    try:
+        # Clear existing data if requested
+        if clear_existing:
+            clear_success, clear_message = clear_supabase_table(supabase_client)
+            if not clear_success:
+                return False, f"Failed to clear existing data: {clear_message}"
+            st.success(f"✅ {clear_message}")
+        
+        # Insert data in batches for better performance
+        batch_size = 100
+        total_uploaded = 0
+        
+        for i in range(0, len(data), batch_size):
+            batch = data[i:i + batch_size]
+            result = supabase_client.table('deals').insert(batch).execute()
+            total_uploaded += len(batch)
+            
+            if not auto_upload:
+                st.progress(min(i + batch_size, len(data)) / len(data))
+        
+        return True, f"Successfully uploaded {total_uploaded} records to Supabase"
+    except Exception as e:
+        return False, f"Failed to upload to Supabase: {str(e)}"
 
 # Load default data
 df = load_data()
