@@ -185,11 +185,24 @@ def validate_data_ranges(df):
     return validation_results
 
 def map_to_supabase_schema(df):
-    """Map CSV data to Supabase deals table schema"""
+    """Map CSV data to Supabase deals table schema
+    
+    This function filters and maps only the fields required by the Supabase deals table:
+    - asset_name (from Property Name)
+    - full_address (from Address) 
+    - total_units (from Units)
+    - net_rentable_area_sqft (from SqFt)
+    - current_occupancy_pct (from any occupancy column)
+    - source_document (set to 'CSV Upload')
+    - created_at/updated_at (timestamps)
+    """
     supabase_data = []
     
+    # Show what fields we're mapping
+    st.info("🔄 **Filtering CSV data for Supabase deals table schema:**")
+    
     for _, row in df.iterrows():
-        # Map to exact Supabase schema fields
+        # Map to exact Supabase schema fields only
         record = {
             'asset_name': str(row.get('Property Name', '')),
             'full_address': str(row.get('Address', '')),
@@ -200,7 +213,7 @@ def map_to_supabase_schema(df):
             'updated_at': datetime.now().isoformat()
         }
         
-        # Handle occupancy field (the truncated field from Supabase schema)
+        # Handle occupancy field (look for any column with 'occupancy' in the name)
         occupancy_cols = [col for col in df.columns if 'occupancy' in col.lower()]
         if occupancy_cols:
             occupancy_value = row.get(occupancy_cols[0])
@@ -209,6 +222,26 @@ def map_to_supabase_schema(df):
                 record['current_occupancy_pct'] = float(occupancy_value)
         
         supabase_data.append(record)
+    
+    # Show mapping summary
+    original_cols = list(df.columns)
+    supabase_cols = list(record.keys()) if supabase_data else []
+    
+    st.markdown(f"""
+    **📊 Data Mapping Summary:**
+    - **Original CSV columns:** {len(original_cols)} fields
+    - **Supabase schema fields:** {len(supabase_cols)} fields  
+    - **Records processed:** {len(supabase_data)}
+    
+    **🎯 Mapped Fields:**
+    - `Property Name` → `asset_name`
+    - `Address` → `full_address` 
+    - `Units` → `total_units`
+    - `SqFt` → `net_rentable_area_sqft`
+    - `[occupancy column]` → `current_occupancy_pct`
+    - `source_document` = 'CSV Upload'
+    - `created_at`/`updated_at` = current timestamp
+    """)
     
     return supabase_data
 
