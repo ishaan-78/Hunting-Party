@@ -214,12 +214,13 @@ def map_to_supabase_schema(df):
         }
         
         # Handle occupancy field (look for any column with 'occupancy' in the name)
+        # Note: Supabase field is 'current_occupancy_percent', not 'current_occupancy_pct'
         occupancy_cols = [col for col in df.columns if 'occupancy' in col.lower()]
         if occupancy_cols:
             occupancy_value = row.get(occupancy_cols[0])
             if pd.notna(occupancy_value):
                 # Convert to decimal format (e.g., 85.5 for 85.5%)
-                record['current_occupancy_pct'] = float(occupancy_value)
+                record['current_occupancy_percent'] = float(occupancy_value)
         
         supabase_data.append(record)
     
@@ -238,19 +239,38 @@ def map_to_supabase_schema(df):
     - `Address` → `full_address` 
     - `Units` → `total_units`
     - `SqFt` → `net_rentable_area_sqft`
-    - `[occupancy column]` → `current_occupancy_pct`
+    - `[occupancy column]` → `current_occupancy_percent`
     - `source_document` = 'CSV Upload'
     - `created_at`/`updated_at` = current timestamp
     """)
     
     return supabase_data
 
-def upload_to_supabase(supabase_client, data, auto_upload=True):
+def clear_supabase_table(supabase_client):
+    """Clear all existing data from the Supabase deals table"""
+    if not supabase_client:
+        return False, "No Supabase client available"
+    
+    try:
+        # Delete all records from the deals table
+        result = supabase_client.table('deals').delete().neq('id', 0).execute()
+        return True, f"Successfully cleared all existing records from Supabase deals table"
+    except Exception as e:
+        return False, f"Failed to clear Supabase table: {str(e)}"
+
+def upload_to_supabase(supabase_client, data, auto_upload=True, clear_existing=False):
     """Upload data to Supabase with progress tracking"""
     if not supabase_client or not data:
         return False, "No data or Supabase client available"
     
     try:
+        # Clear existing data if requested
+        if clear_existing:
+            clear_success, clear_message = clear_supabase_table(supabase_client)
+            if not clear_success:
+                return False, f"Failed to clear existing data: {clear_message}"
+            st.success(f"✅ {clear_message}")
+        
         # Insert data in batches for better performance
         batch_size = 100
         total_uploaded = 0
@@ -503,9 +523,13 @@ elif supabase_client:
             st.dataframe(preview_df.head(), use_container_width=True)
         
         with col2:
+            # Option to clear existing data
+            clear_existing = st.checkbox("🗑️ Clear existing data first", 
+                                       help="This will delete all existing records from the Supabase deals table before uploading new data")
+            
             if st.button("📤 Upload to Supabase", type="primary"):
                 with st.spinner("Uploading to Supabase..."):
-                    success, message = upload_to_supabase(supabase_client, supabase_data, auto_upload=False)
+                    success, message = upload_to_supabase(supabase_client, supabase_data, auto_upload=False, clear_existing=clear_existing)
                     if success:
                         st.success(f"✅ {message}")
                     else:

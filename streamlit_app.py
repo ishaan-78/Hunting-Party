@@ -35,7 +35,7 @@ st.set_page_config(
 # Import all functions from the main app
 from app import (
     load_data, init_supabase, clean_and_validate_data, validate_data_ranges,
-    map_to_supabase_schema, upload_to_supabase
+    map_to_supabase_schema, upload_to_supabase, clear_supabase_table
 )
 
 # Load default data
@@ -92,7 +92,7 @@ if uploaded_file is not None:
         if supabase_client:
             with st.spinner("🔄 Automatically uploading to Supabase..."):
                 supabase_data = map_to_supabase_schema(df)
-                success, message = upload_to_supabase(supabase_client, supabase_data, auto_upload=True)
+                success, message = upload_to_supabase(supabase_client, supabase_data, auto_upload=True, clear_existing=False)
                 if success:
                     st.success(f"🚀 {message}")
                 else:
@@ -274,9 +274,13 @@ elif supabase_client:
             st.dataframe(preview_df.head(), use_container_width=True)
         
         with col2:
+            # Option to clear existing data
+            clear_existing = st.checkbox("🗑️ Clear existing data first", 
+                                       help="This will delete all existing records from the Supabase deals table before uploading new data")
+            
             if st.button("📤 Upload to Supabase", type="primary"):
                 with st.spinner("Uploading to Supabase..."):
-                    success, message = upload_to_supabase(supabase_client, supabase_data, auto_upload=False)
+                    success, message = upload_to_supabase(supabase_client, supabase_data, auto_upload=False, clear_existing=clear_existing)
                     if success:
                         st.success(f"✅ {message}")
                     else:
