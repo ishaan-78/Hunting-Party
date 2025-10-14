@@ -257,9 +257,15 @@ def clear_supabase_table(supabase_client):
         return False, "No Supabase client available"
     
     try:
-        # Delete all records from the deals table
-        result = supabase_client.table('deals').delete().neq('id', 0).execute()
-        return True, f"Successfully cleared all existing records from Supabase deals table"
+        # First, try to get existing records to verify we can access the table
+        existing_records = supabase_client.table('deals').select('id').execute()
+        
+        if existing_records.data:
+            # Delete all records from the deals table
+            result = supabase_client.table('deals').delete().neq('id', 0).execute()
+            return True, f"Successfully cleared {len(existing_records.data)} existing records from Supabase deals table"
+        else:
+            return True, "No existing records found in Supabase deals table"
     except Exception as e:
         return False, f"Failed to clear Supabase table: {str(e)}"
 
@@ -276,6 +282,13 @@ def upload_to_supabase(supabase_client, data, auto_upload=True, clear_existing=F
                 return False, f"Failed to clear existing data: {clear_message}"
             st.success(f"✅ {clear_message}")
         
+        # Test a small batch first to check for RLS issues
+        test_batch = data[:1] if data else []
+        if test_batch:
+            test_result = supabase_client.table('deals').insert(test_batch).execute()
+            if not test_result.data:
+                return False, "❌ Row Level Security (RLS) policy violation. Please check your Supabase RLS settings for the 'deals' table."
+        
         # Insert data in batches for better performance
         batch_size = 100
         total_uploaded = 0
@@ -283,14 +296,22 @@ def upload_to_supabase(supabase_client, data, auto_upload=True, clear_existing=F
         for i in range(0, len(data), batch_size):
             batch = data[i:i + batch_size]
             result = supabase_client.table('deals').insert(batch).execute()
-            total_uploaded += len(batch)
+            
+            if not result.data:
+                return False, f"❌ Upload failed at batch {i//batch_size + 1}. This is likely due to Row Level Security (RLS) policies on the 'deals' table."
+            
+            total_uploaded += len(result.data)
             
             if not auto_upload:
                 st.progress(min(i + batch_size, len(data)) / len(data))
         
         return True, f"Successfully uploaded {total_uploaded} records to Supabase"
     except Exception as e:
-        return False, f"Failed to upload to Supabase: {str(e)}"
+        error_msg = str(e)
+        if "row-level security policy" in error_msg.lower():
+            return False, f"❌ Row Level Security (RLS) policy violation. Please check your Supabase RLS settings for the 'deals' table. Error: {error_msg}"
+        else:
+            return False, f"Failed to upload to Supabase: {error_msg}"
 
 # Load default data
 df = load_data()
@@ -539,6 +560,26 @@ elif supabase_client:
                         st.success(f"✅ {message}")
                     else:
                         st.error(f"❌ {message}")
+                        
+                        # Show RLS policy help if that's the issue
+                        if "row level security" in message.lower() or "rls" in message.lower():
+                            st.warning("""
+                            **🔒 Row Level Security (RLS) Issue Detected**
+                            
+                            Your Supabase `deals` table has Row Level Security enabled, which is blocking the upload.
+                            
+                            **To fix this, you need to:**
+                            1. Go to your Supabase dashboard
+                            2. Navigate to Authentication → Policies
+                            3. Find the `deals` table
+                            4. Either disable RLS or add a policy that allows inserts
+                            
+                            **Quick Fix:** Add this policy to allow all operations:
+                            ```sql
+                            CREATE POLICY "Allow all operations" ON deals
+                            FOR ALL USING (true);
+                            ```
+                            """)
             
             # Download Supabase-ready CSV
             csv_data = preview_df.to_csv(index=False)
