@@ -34,6 +34,14 @@ st.set_page_config(
 def load_data():
     """Load default data if available, otherwise return empty DataFrame"""
     try:
+        # Check if file exists first
+        if not os.path.exists('Export Results.csv'):
+            return pd.DataFrame(columns=[
+                'Property Name', 'Type', 'City', 'Address', 'Property Status',
+                'Asking Price', 'SqFt', 'Price/SqFt', 'Cap Rate', 'Units',
+                'Days on Market', 'Latitude', 'Longitude', 'Opportunity Zone'
+            ])
+        
         df = pd.read_csv('Export Results.csv', skiprows=2, encoding='latin-1')
         
         # Clean price columns
@@ -55,8 +63,8 @@ def load_data():
                 df[col] = pd.to_numeric(df[col], errors='coerce')
 
         return df
-    except (FileNotFoundError, Exception) as e:
-        # Return empty DataFrame with expected columns if no default file
+    except Exception as e:
+        # Return empty DataFrame with expected columns if any error occurs
         return pd.DataFrame(columns=[
             'Property Name', 'Type', 'City', 'Address', 'Property Status',
             'Asking Price', 'SqFt', 'Price/SqFt', 'Cap Rate', 'Units',
@@ -234,9 +242,19 @@ st.title("🏢 Dynamic Commercial Real Estate Dashboard")
 st.markdown("Upload a CSV file to generate dynamic charts and analyze real estate data")
 
 # Show different messages based on whether we have data
-if len(df) == 0:
+if len(df) == 0 or df.empty:
     st.info("📁 **Upload a CSV file** using the sidebar to get started with your real estate data analysis!")
     st.markdown("**No data loaded yet.** Upload a CSV file to see charts and analysis.")
+    
+    # Show example of what the app can do
+    st.markdown("### 🎯 What this app can do:")
+    st.markdown("""
+    - **📊 Dynamic Charts**: Automatically generate visualizations based on your data
+    - **🗺️ Interactive Maps**: Plot property locations on a map
+    - **🔍 Smart Filtering**: Filter by property type, city, status, and more
+    - **☁️ Supabase Integration**: Automatically upload filtered data to your database
+    - **💾 Export Options**: Download filtered or raw data as CSV
+    """)
 else:
     st.success("🚀 **Live Demo**: This app updates automatically when code changes!")
 
@@ -442,31 +460,34 @@ supabase_client = init_supabase()
 if not SUPABASE_AVAILABLE:
     st.info("ℹ️ Supabase integration is not available due to import issues. All other features work normally.")
 elif supabase_client:
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.write("**Current Filtered Data Preview for Supabase:**")
-        supabase_data = map_to_supabase_schema(filtered_df)
-        preview_df = pd.DataFrame(supabase_data)
-        st.dataframe(preview_df.head(), use_container_width=True)
-    
-    with col2:
-        if st.button("📤 Upload to Supabase", type="primary"):
-            with st.spinner("Uploading to Supabase..."):
-                success, message = upload_to_supabase(supabase_client, supabase_data, auto_upload=False)
-                if success:
-                    st.success(f"✅ {message}")
-                else:
-                    st.error(f"❌ {message}")
+    if len(filtered_df) > 0 and not filtered_df.empty:
+        col1, col2 = st.columns([2, 1])
         
-        # Download Supabase-ready CSV
-        csv_data = preview_df.to_csv(index=False)
-        st.download_button(
-            label="💾 Download Supabase CSV",
-            data=csv_data,
-            file_name=f'supabase_deals_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv',
-            mime='text/csv'
-        )
+        with col1:
+            st.write("**Current Filtered Data Preview for Supabase:**")
+            supabase_data = map_to_supabase_schema(filtered_df)
+            preview_df = pd.DataFrame(supabase_data)
+            st.dataframe(preview_df.head(), use_container_width=True)
+        
+        with col2:
+            if st.button("📤 Upload to Supabase", type="primary"):
+                with st.spinner("Uploading to Supabase..."):
+                    success, message = upload_to_supabase(supabase_client, supabase_data, auto_upload=False)
+                    if success:
+                        st.success(f"✅ {message}")
+                    else:
+                        st.error(f"❌ {message}")
+            
+            # Download Supabase-ready CSV
+            csv_data = preview_df.to_csv(index=False)
+            st.download_button(
+                label="💾 Download Supabase CSV",
+                data=csv_data,
+                file_name=f'supabase_deals_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv',
+                mime='text/csv'
+            )
+    else:
+        st.info("📁 Upload a CSV file first to see Supabase integration options.")
 else:
     st.warning("⚠️ Supabase credentials not configured. Please:")
     st.markdown("""
@@ -479,20 +500,23 @@ else:
 st.divider()
 st.header("💾 Download Data")
 
-col1, col2 = st.columns(2)
+if len(filtered_df) > 0 and not filtered_df.empty:
+    col1, col2 = st.columns(2)
 
-with col1:
-    st.download_button(
-        label="Download Filtered Data as CSV",
-        data=filtered_df.to_csv(index=False).encode('utf-8'),
-        file_name=f'filtered_properties_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv',
-        mime='text/csv'
-    )
+    with col1:
+        st.download_button(
+            label="Download Filtered Data as CSV",
+            data=filtered_df.to_csv(index=False).encode('utf-8'),
+            file_name=f'filtered_properties_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv',
+            mime='text/csv'
+        )
 
-with col2:
-    st.download_button(
-        label="Download All Data as CSV",
-        data=df.to_csv(index=False).encode('utf-8'),
-        file_name=f'all_properties_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv',
-        mime='text/csv'
-    )
+    with col2:
+        st.download_button(
+            label="Download All Data as CSV",
+            data=df.to_csv(index=False).encode('utf-8'),
+            file_name=f'all_properties_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv',
+            mime='text/csv'
+        )
+else:
+    st.info("📁 Upload a CSV file first to enable download options.")
